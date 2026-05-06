@@ -109,6 +109,7 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
 DEFAULT_LLM_MODEL = os.environ.get("MEM0_DEFAULT_LLM_MODEL", "gpt-4.1-nano-2025-04-14")
 DEFAULT_EMBEDDER_MODEL = os.environ.get("MEM0_DEFAULT_EMBEDDER_MODEL", "text-embedding-3-small")
+CONFIG_PATH = os.environ.get("MEM0_CONFIG_PATH")
 
 DEFAULT_CONFIG = {
     "version": "v1.1",
@@ -133,7 +134,7 @@ DEFAULT_CONFIG = {
 
 
 set_session_factory(SessionLocal)
-initialize_state(DEFAULT_CONFIG)
+initialize_state(DEFAULT_CONFIG, config_path=CONFIG_PATH)
 
 
 app = FastAPI(

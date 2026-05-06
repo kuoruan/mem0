@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import threading
 from copy import deepcopy
 from typing import Any, Callable, Dict
@@ -73,10 +74,42 @@ def _merge_config(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, An
     return merged
 
 
-def initialize_state(default_config: Dict[str, Any]) -> None:
+def _expand_env_vars(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _expand_env_vars(item_value) for key, item_value in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_vars(item_value) for item_value in value]
+    if isinstance(value, str):
+        return os.path.expandvars(value)
+    return value
+
+
+def _load_config_file(config_path: str) -> Dict[str, Any]:
+    try:
+        with open(config_path, encoding="utf-8") as config_file:
+            raw_config = config_file.read()
+    except OSError as exc:
+        raise RuntimeError(f"Failed to read mem0 config file '{config_path}': {exc}") from exc
+
+    try:
+        loaded_config = json.loads(raw_config)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid JSON in mem0 config file '{config_path}': {exc}") from exc
+
+    if not isinstance(loaded_config, dict):
+        raise RuntimeError(f"Mem0 config file '{config_path}' must be a JSON object at the root.")
+
+    return _expand_env_vars(loaded_config)
+
+
+def initialize_state(default_config: Dict[str, Any], config_path: str | None = None) -> None:
     global _current_config, _memory_instance
     with _state_lock:
         _current_config = deepcopy(default_config)
+        if config_path and os.path.exists(config_path):
+            file_overrides = _load_config_file(config_path)
+            if file_overrides:
+                _current_config = _merge_config(_current_config, file_overrides)
         overrides = _load_overrides()
         if overrides:
             _current_config = _merge_config(_current_config, overrides)
