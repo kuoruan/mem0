@@ -299,6 +299,30 @@ async def log_requests(request: Request, call_next):
             )
 
 
+@app.get("/api/health", summary="Health check")
+def health_check():
+    """Return server health status including DB and vector store connectivity."""
+    checks = {"server": "ok"}
+
+    # Check DB connectivity
+    try:
+        with SessionLocal() as session:
+            session.execute(select(1))
+            checks["db"] = "ok"
+    except Exception as exc:
+        checks["db"] = f"error: {exc}"
+
+    # Check vector store via Memory instance
+    try:
+        get_memory_instance()
+        checks["vector_store"] = "ok"
+    except Exception as exc:
+        checks["vector_store"] = f"error: {exc}"
+
+    status_code = 200 if all(v == "ok" for v in checks.values()) else 503
+    return JSONResponse(content=checks, status_code=status_code)
+
+
 @app.get("/configure", summary="Get current Mem0 configuration")
 def get_config(_auth=Depends(verify_auth)):
     return _redact_config(get_current_config())
