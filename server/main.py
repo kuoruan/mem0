@@ -252,24 +252,21 @@ def _should_log_request(request: Request) -> bool:
 
 
 def _persist_request_log(method: str, path: str, status_code: int, latency_ms: float, auth_type: str) -> None:
-    session = SessionLocal()
-
-    try:
-        session.add(
-            RequestLog(
-                method=method,
-                path=path,
-                status_code=status_code,
-                latency_ms=latency_ms,
-                auth_type=auth_type,
+    with SessionLocal() as session:
+        try:
+            session.add(
+                RequestLog(
+                    method=method,
+                    path=path,
+                    status_code=status_code,
+                    latency_ms=latency_ms,
+                    auth_type=auth_type,
+                )
             )
-        )
-        session.commit()
-    except Exception:
-        session.rollback()
-        logging.exception("Failed to persist request log")
-    finally:
-        session.close()
+            session.commit()
+        except Exception:
+            session.rollback()
+            logging.exception("Failed to persist request log")
 
 
 @app.middleware("http")
