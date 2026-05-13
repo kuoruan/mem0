@@ -258,6 +258,13 @@ class TestAuthEnabled:
         assert resp.status_code == 200
         assert resp.json()["id"] == "mem-1"
 
+    def test_get_memory_with_authorization_token(self):
+        resp = self.client.get(
+            "/memories/mem-1", headers={"Authorization": f"Token {self.API_KEY}"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "mem-1"
+
     def test_get_all_memories_with_key(self):
         resp = self._authed("GET", "/memories", params={"user_id": "alice"})
         assert resp.status_code == 200
