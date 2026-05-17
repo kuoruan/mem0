@@ -14,11 +14,29 @@ from server_state import get_memory_instance
 SCAN_LIMIT = 10_000
 
 
+def _normalize_list_result(raw: Any) -> list:
+    """Unpack different ``vector_store.list()`` return shapes into a flat list of rows.
+
+    Backend return shapes:
+    - PGVector / Chroma: ``[[OutputData, …]]`` — list containing one list of rows
+    - Qdrant: ``([ScoredPoint, …], next_page_offset)`` — tuple of (rows, offset)
+    - Others: flat ``[row, …]`` or empty ``[]``
+    """
+    if not raw:
+        return []
+    if isinstance(raw, tuple):
+        return raw[0] if isinstance(raw[0], list) else []
+    if isinstance(raw, list) and raw and isinstance(raw[0], list):
+        return raw[0]
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
 def iter_payloads() -> list[dict[str, Any]]:
     """Return raw vector-store payloads for all stored memories."""
-    results = get_memory_instance().vector_store.list(top_k=SCAN_LIMIT)
-    rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
-    return [getattr(row, "payload", None) or {} for row in rows]
+    rows = _normalize_list_result(get_memory_instance().vector_store.list(top_k=SCAN_LIMIT))
+    return [getattr(row, "payload", None) or {} for row in rows if row is not None]
 
 
 def parse_timestamp(value: Any) -> Optional[datetime]:
