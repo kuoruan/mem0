@@ -25,7 +25,7 @@ def _normalize_list_result(raw: Any) -> list:
     if not raw:
         return []
     if isinstance(raw, tuple):
-        return raw[0] if raw else []
+        return raw[0] if isinstance(raw[0], list) else []
     if isinstance(raw, list) and raw and isinstance(raw[0], list):
         return raw[0]
     if isinstance(raw, list):
@@ -36,7 +36,7 @@ def _normalize_list_result(raw: Any) -> list:
 def iter_payloads() -> list[dict[str, Any]]:
     """Return raw vector-store payloads for all stored memories."""
     rows = _normalize_list_result(get_memory_instance().vector_store.list(top_k=SCAN_LIMIT))
-    return [getattr(row, "payload", None) or {} for row in rows]
+    return [getattr(row, "payload", None) or {} for row in rows if row is not None]
 
 
 def parse_timestamp(value: Any) -> Optional[datetime]:

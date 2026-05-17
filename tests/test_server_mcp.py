@@ -233,6 +233,90 @@ def test_get_memories_with_explicit_user_id(mcp_testbed):
     mock_memory.get_all.assert_called_once_with(filters={"user_id": "alice"})
 
 
+def test_get_memory_non_dict_returns_empty(mcp_testbed):
+    """When SDK get() returns a non-dict, MCP should log a warning and return {}."""
+    module, client, mock_memory = mcp_testbed
+    _initialize_client(client)
+    mock_memory.get.return_value = ["not", "a", "dict"]
+
+    response = client.post(
+        "/mcp",
+        json=_jsonrpc(
+            "tools/call",
+            {"name": "get_memory", "arguments": {"memory_id": "mem-x"}},
+            req_id=2,
+        ),
+        headers=MCP_HEADERS,
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]["structuredContent"]
+    assert result == {}
+
+
+def test_update_memory_non_dict_returns_fallback(mcp_testbed):
+    """When SDK update() returns a non-dict, MCP should log a warning and return fallback."""
+    module, client, mock_memory = mcp_testbed
+    _initialize_client(client)
+    mock_memory.update.return_value = "ok"
+
+    response = client.post(
+        "/mcp",
+        json=_jsonrpc(
+            "tools/call",
+            {"name": "update_memory", "arguments": {"memory_id": "mem-x", "text": "new"}},
+            req_id=2,
+        ),
+        headers=MCP_HEADERS,
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]["structuredContent"]
+    assert result == {"message": "Memory updated successfully"}
+
+
+def test_normalize_list_result_shapes():
+    """_normalize_list_result should handle all documented backend return shapes."""
+    from compat.entities import _normalize_list_result
+
+    # Empty / falsy
+    assert _normalize_list_result(None) == []
+    assert _normalize_list_result([]) == []
+
+    # PGVector / Chroma: nested list
+    row = MagicMock(payload={"foo": "bar"})
+    assert _normalize_list_result([[row]]) == [row]
+
+    # Qdrant: tuple of (rows, offset)
+    assert _normalize_list_result(([row], "next_offset")) == [row]
+
+    # Qdrant edge: tuple with non-list first element
+    assert _normalize_list_result((None, "offset")) == []
+    assert _normalize_list_result(("not-a-list", 0)) == []
+
+    # Flat list
+    assert _normalize_list_result([row]) == [row]
+
+
+def test_iter_payloads_skips_none_rows():
+    """iter_payloads should skip None entries in the rows list."""
+    import importlib as _ilib
+    from unittest.mock import patch
+
+    module = _ilib.reload(mcp_server)
+
+    row = MagicMock(payload={"data": 1})
+    mock_memory = MagicMock()
+    mock_memory.vector_store.list.return_value = [row, None, MagicMock(payload={"data": 2})]
+
+    with patch.object(module, "get_memory_instance", return_value=mock_memory):
+        from compat.entities import iter_payloads
+        payloads = iter_payloads()
+
+    assert payloads == [{"data": 1}, {"data": 2}]
+    assert len(payloads) == 2
+
+
 def test_update_memory_with_metadata(mcp_testbed):
     _, client, mock_memory = mcp_testbed
     _initialize_client(client)
