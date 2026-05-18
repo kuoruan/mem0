@@ -91,6 +91,8 @@ class MemorySearchInput(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata associated with the memory.")
     top_k: Optional[int] = Field(default=None, description="The number of top results to return.")
     threshold: Optional[float] = Field(default=None, description="The minimum similarity threshold for returned results.")
+    rerank: Optional[bool] = Field(default=None, description="Whether to rerank the memories.")
+    fields: Optional[List[str]] = Field(default=None, description="A list of field names to include in the response. If not provided, all fields will be returned.")
 
 
 class MemoryUpdateInput(BaseModel):
@@ -342,7 +344,7 @@ def v1_add_memories(body: MemoryAddInput, _auth=Depends(verify_auth)):
         meta.setdefault("categories", body.categories)
         params["metadata"] = meta
     result = get_memory_instance().add(messages=body.messages, **params)
-    return {"results": normalize_results(result)}
+    return normalize_results(result)
 
 
 @router.get("/v1/memories/{memory_id}/", summary="Get a memory (v1)")
@@ -401,15 +403,16 @@ def v1_get_entity_memories(entity_type: str, entity_id: str, _auth=Depends(verif
 @upstream_guard
 def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
+    _warn_unsupported_fields(body.fields, "v1_search_memories")
     entity_params = collect_entity_params(
         user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="At least one entity ID is required.")
     result = get_memory_instance().search(
-        query=body.query, **_build_search_kwargs(entity_params, body.top_k, body.threshold)
+        query=body.query, **_build_search_kwargs(entity_params, body.top_k, body.threshold, body.rerank)
     )
-    return {"results": normalize_results(result)}
+    return normalize_results(result)
 
 
 @router.delete("/v1/memories/", summary="Delete all memories (v1)")
@@ -520,6 +523,8 @@ def v2_list_memories(
         detail="filters must include at least one entity ID (user_id, agent_id, or run_id).",
     )
     raw = get_memory_instance().get_all(filters=_build_list_filters(body, entity_params))
+    # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
+    # support server-side limit/offset. Known limitation for very large datasets.
     return _paginate_response(request, normalize_results(raw), page, page_size)
 
 
@@ -528,15 +533,11 @@ def v2_list_memories(
 def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
     _warn_unsupported_fields(body.fields, "v2_search_memories")
-    entity_params = collect_entity_params(
-        filters=body.filters,
+    effective_filters = build_search_filters(
         user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
+        filters=body.filters,
+        detail="At least one entity ID is required.",
     )
-    if not entity_params:
-        raise HTTPException(status_code=400, detail="At least one entity ID is required.")
-    # Pass full filters to the SDK so non-entity conditions are not discarded;
-    # fall back to entity_params when no filters provided.
-    effective_filters: Dict[str, Any] = body.filters if body.filters else entity_params
     result = get_memory_instance().search(
         query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
     )
@@ -606,6 +607,8 @@ def v3_get_all_memories(
         detail="filters must include at least one entity ID (user_id, agent_id, or run_id).",
     )
     raw = get_memory_instance().get_all(filters=_build_list_filters(body, entity_params))
+    # NOTE: Pagination is performed in-memory. The OSS SDK's get_all() does not yet
+    # support server-side limit/offset. Known limitation for very large datasets.
     return _paginate_response(request, normalize_results(raw), page, page_size)
 
 
@@ -614,15 +617,11 @@ def v3_get_all_memories(
 def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
     _warn_unsupported_fields(body.fields, "v3_search_memories")
-    entity_params = collect_entity_params(
-        filters=body.filters,
+    effective_filters = build_search_filters(
         user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
+        filters=body.filters,
+        detail="At least one entity ID is required.",
     )
-    if not entity_params:
-        raise HTTPException(status_code=400, detail="At least one entity ID is required.")
-    # Pass full filters to the SDK so non-entity conditions are not discarded;
-    # fall back to entity_params when no filters provided.
-    effective_filters: Dict[str, Any] = dict(body.filters) if body.filters else dict(entity_params)
     # Merge convenience categories field for flat (non-AND/OR) dicts.
     if "AND" not in effective_filters and "OR" not in effective_filters:
         if body.categories and "categories" not in effective_filters:
@@ -632,7 +631,7 @@ def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
     )
     if body.output_format == "v1.0":
         # Legacy flat-array format requested by the caller.
-        return result if isinstance(result, list) else result.get("results", [])
+        return result if isinstance(result, list) else (result or {}).get("results", [])
     if isinstance(result, list):
         return {"results": result}
     return result

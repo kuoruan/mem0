@@ -49,6 +49,13 @@ def collect_entity_params(
             for key in UNSUPPORTED_ENTITY_PARAMS:
                 if key in filters and filters[key] is not None:
                     raise HTTPException(status_code=501, detail=f"'{key}' is not supported by the self-hosted server.")
+                # Also scan nested AND/OR conditions.
+                for op in ("AND", "OR"):
+                    conditions = filters.get(op)
+                    if isinstance(conditions, list):
+                        for cond in conditions:
+                            if isinstance(cond, dict) and cond.get(key) is not None:
+                                raise HTTPException(status_code=501, detail=f"'{key}' is not supported by the self-hosted server.")
     merged: dict[str, Any] = {}
     if filters:
         # Fast path: flat format {user_id: "...", ...}

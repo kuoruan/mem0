@@ -28,8 +28,12 @@ try:
     import server.compat.entities
     sys.modules.setdefault("compat.entities", sys.modules["server.compat.entities"])
 
-    # compat.decorators depends on `errors` (server-only module); stub it
-    sys.modules.setdefault("compat.decorators", MagicMock())
+    # compat.decorators depends on `errors` (server-only module); stub it with
+    # an identity decorator so @upstream_guard leaves route callables intact.
+    class _CompatDecorators:
+        upstream_guard = staticmethod(lambda fn: fn)
+
+    sys.modules.setdefault("compat.decorators", _CompatDecorators())
 
 except ImportError:
     # fastapi not installed — server tests will be skipped via importorskip

@@ -125,6 +125,16 @@ class TestCollectEntityParams:
         result = collect_entity_params(app_id="x", reject_unsupported=False)
         assert "app_id" not in result  # app_id is not an entity param anyway
 
+    def test_app_id_in_nested_and_filters_raises_501(self):
+        with pytest.raises(HTTPException) as exc:
+            collect_entity_params(filters={"AND": [{"app_id": "x"}, {"user_id": "u1"}]})
+        assert exc.value.status_code == 501
+
+    def test_app_id_in_nested_or_filters_raises_501(self):
+        with pytest.raises(HTTPException) as exc:
+            collect_entity_params(filters={"OR": [{"app_id": "x"}, {"user_id": "u1"}]})
+        assert exc.value.status_code == 501
+
 
 class TestRequireEntityScope:
     def test_raises_when_empty(self):
