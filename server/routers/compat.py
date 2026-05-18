@@ -34,11 +34,12 @@ Covered endpoints
 """
 
 import json
+import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from auth import verify_auth
@@ -59,25 +60,37 @@ router = APIRouter(tags=["Client API"])
 
 class MemoryAddInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    messages: List[Dict[str, Any]] = Field(description="Array of message objects with 'role' and 'content' keys.")
-    agent_id: Optional[str] = Field(default=None, description="Agent identifier to scope the memory.")
-    user_id: Optional[str] = Field(default=None, description="User identifier to scope the memory.")
-    app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
-    run_id: Optional[str] = Field(default=None, description="Run identifier to scope the memory.")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata to attach to the memory.")
-    infer: Optional[bool] = Field(default=None, description="When False, store messages verbatim without LLM fact extraction.")
+    messages: List[Dict[str, Any]] = Field(
+        description="An array of message objects representing the content of the memory. "
+        "Each message object typically contains 'role' and 'content' fields, where 'role' "
+        "indicates the sender ('user' or 'assistant') and 'content' contains the actual message text. "
+        "This structure allows for the representation of conversations or multi-part memories."
+    )
+    agent_id: Optional[str] = Field(default=None, description="The unique identifier of the agent associated with this memory.")
+    user_id: Optional[str] = Field(default=None, description="The unique identifier of the user associated with this memory.")
+    app_id: Optional[str] = Field(default=None, description="The unique identifier of the application. Not supported by the self-hosted server (returns 501).")
+    run_id: Optional[str] = Field(default=None, description="The unique identifier of the run associated with this memory.")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Additional metadata associated with the memory. Best practice for incorporating additional "
+        "information is through metadata (e.g. location, time, ids, etc.). During retrieval, you can either use "
+        "these metadata alongside the query to fetch relevant memories or retrieve memories based on the query "
+        "first and then refine the results using metadata during post-processing.",
+    )
+    infer: Optional[bool] = Field(default=None, description="Whether to infer the memories or directly store the messages.")
+    categories: Optional[List[str]] = Field(default=None, description="A list of categories to tag the memory with.")
 
 
 class MemorySearchInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    query: str = Field(description="The search query string.")
-    agent_id: Optional[str] = Field(default=None, description="Agent ID to filter memories by.")
-    user_id: Optional[str] = Field(default=None, description="User ID to filter memories by.")
-    app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
-    run_id: Optional[str] = Field(default=None, description="Run ID to filter memories by.")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Metadata filters for the search.")
-    top_k: Optional[int] = Field(default=None, description="Maximum number of results to return.")
-    threshold: Optional[float] = Field(default=None, description="Minimum similarity threshold (0.0–1.0).")
+    query: str = Field(description="The query to search for in the memory.")
+    agent_id: Optional[str] = Field(default=None, description="The agent ID associated with the memory.")
+    user_id: Optional[str] = Field(default=None, description="The user ID associated with the memory.")
+    app_id: Optional[str] = Field(default=None, description="The app ID associated with the memory. Not supported by the self-hosted server (returns 501).")
+    run_id: Optional[str] = Field(default=None, description="The run ID associated with the memory.")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata associated with the memory.")
+    top_k: Optional[int] = Field(default=None, description="The number of top results to return.")
+    threshold: Optional[float] = Field(default=None, description="The minimum similarity threshold for returned results.")
 
 
 class MemoryUpdateInput(BaseModel):
@@ -118,63 +131,99 @@ class MemoryGetInputV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
     filters: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Filters with entity IDs and operators (AND, OR, gte, lte, contains, etc.).",
+        description="A dictionary of filters to apply to retrieve memories. Available fields are: "
+        "user_id, agent_id, app_id, run_id, created_at, updated_at, categories, keywords. "
+        "Supports logical operators (AND, OR) and comparison operators (in, gte, lte, gt, lt, ne, contains, icontains, *). "
+        "For categories field, use 'contains' for partial matching "
+        "(e.g., {\"categories\": {\"contains\": \"finance\"}}) or 'in' for exact matching "
+        "(e.g., {\"categories\": {\"in\": [\"personal_information\"]}}).",
     )
     start_date: Optional[str] = Field(default=None, description="Only return memories created on or after this ISO 8601 date.")
     end_date: Optional[str] = Field(default=None, description="Only return memories created on or before this ISO 8601 date.")
-    categories: Optional[List[str]] = Field(default=None, description="Filter memories by categories.")
+    categories: Optional[List[str]] = Field(default=None, description="A list of categories to filter the memories by.")
 
 
 class MemorySearchInputV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    query: str = Field(description="The search query string.")
-    filters: Optional[Dict[str, Any]] = Field(default=None, description="Structured filters with entity IDs and operators.")
-    top_k: Optional[int] = Field(default=None, description="Maximum number of results to return.")
-    threshold: Optional[float] = Field(default=None, description="Minimum similarity threshold (0.0–1.0).")
-    rerank: Optional[bool] = Field(default=None, description="Whether to rerank results.")
-    user_id: Optional[str] = Field(default=None, description="User ID to filter by (also accepted inside filters).")
-    agent_id: Optional[str] = Field(default=None, description="Agent ID to filter by (also accepted inside filters).")
+    query: str = Field(description="The query to search for in the memory.")
+    filters: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="A dictionary of filters to apply to the search. Available fields are: "
+        "user_id, agent_id, app_id, run_id, created_at, updated_at, categories, keywords. "
+        "Supports logical operators (AND, OR) and comparison operators (in, gte, lte, gt, lt, ne, contains, icontains). "
+        "For categories field, use 'contains' for partial matching "
+        "(e.g., {\"categories\": {\"contains\": \"finance\"}}) or 'in' for exact matching "
+        "(e.g., {\"categories\": {\"in\": [\"personal_information\"]}}).",
+    )
+    top_k: Optional[int] = Field(default=None, description="The number of top results to return.")
+    threshold: Optional[float] = Field(default=None, description="The minimum similarity threshold for returned results.")
+    rerank: Optional[bool] = Field(default=None, description="Whether to rerank the memories.")
+    user_id: Optional[str] = Field(default=None, description="The user ID associated with the memory (also accepted inside filters).")
+    agent_id: Optional[str] = Field(default=None, description="The agent ID associated with the memory (also accepted inside filters).")
     app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
-    run_id: Optional[str] = Field(default=None, description="Run ID to filter by (also accepted inside filters).")
-    fields: Optional[List[str]] = Field(default=None, description="Field names to include in the response.")
+    run_id: Optional[str] = Field(default=None, description="The run ID associated with the memory (also accepted inside filters).")
+    fields: Optional[List[str]] = Field(default=None, description="A list of field names to include in the response. If not provided, all fields will be returned.")
 
 
 class MemoryAddInputV3(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    messages: List[Dict[str, Any]] = Field(description="Array of message objects with 'role' and 'content' keys.")
-    agent_id: Optional[str] = Field(default=None, description="Agent identifier to scope the memory.")
-    user_id: Optional[str] = Field(default=None, description="User identifier to scope the memory.")
+    messages: List[Dict[str, Any]] = Field(description="Conversation messages to extract memories from. "
+        "Each object must have 'role' ('user', 'assistant', or 'system') and 'content' keys.")
+    agent_id: Optional[str] = Field(default=None, description="Scope memories to this agent.")
+    user_id: Optional[str] = Field(default=None, description="Scope memories to this user.")
     app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
-    run_id: Optional[str] = Field(default=None, description="Run identifier to scope the memory.")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata to attach to the memory.")
+    run_id: Optional[str] = Field(default=None, description="Scope memories to this session / run.")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None, description="User-supplied metadata to attach to each extracted memory."
+    )
     filters: Optional[Dict[str, Any]] = Field(default=None, description="Filters containing entity IDs (e.g. {'user_id': '...'}).")
-    infer: Optional[bool] = Field(default=None, description="When False, store messages verbatim without LLM fact extraction.")
+    infer: Optional[bool] = Field(
+        default=None, description="When `false`, stores each message verbatim without running the extraction LLM."
+    )
     custom_categories: Optional[List[Dict[str, Any]]] = Field(
-        default=None, description="Custom category definitions with name and description."
+        default=None, description="A list of categories with category name and its description."
     )
     custom_instructions: Optional[str] = Field(
-        default=None, description="Project-specific guidelines for handling and organizing memories."
+        default=None, description="Project-level instructions that guide extraction for this call."
     )
     structured_data_schema: Optional[Dict[str, Any]] = Field(
         default=None, description="Schema for structured data extraction from the memory."
     )
-    timestamp: Optional[int] = Field(default=None, description="Unix timestamp for the memory.")
+    timestamp: Optional[int] = Field(default=None, description="The timestamp of the memory. Format: Unix timestamp")
+    source: Optional[str] = Field(default=None, description="Source identifier for the memory (e.g. 'OPENCLAW'). Stored in metadata.")
+    deduced_memories: Optional[List[Any]] = Field(
+        default=None, description="Pre-extracted fact strings used by agentic harnesses when infer=False. Stored in metadata."
+    )
 
 
 class MemorySearchInputV3(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    query: str = Field(description="The search query string.")
-    agent_id: Optional[str] = Field(default=None, description="Agent ID to filter by.")
-    user_id: Optional[str] = Field(default=None, description="User ID to filter by.")
+    query: str = Field(description="Natural-language search query.")
+    agent_id: Optional[str] = Field(default=None, description="The agent ID associated with the memory.")
+    user_id: Optional[str] = Field(default=None, description="The user ID associated with the memory.")
     app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
-    run_id: Optional[str] = Field(default=None, description="Run ID to filter by.")
-    filters: Optional[Dict[str, Any]] = Field(default=None, description="Structured filters with entity IDs and operators.")
-    top_k: Optional[int] = Field(default=None, description="Maximum number of results to return.")
-    threshold: Optional[float] = Field(default=None, description="Minimum similarity threshold (0.0–1.0).")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Metadata filters for the search.")
-    rerank: Optional[bool] = Field(default=None, description="Whether to rerank results.")
-    fields: Optional[List[str]] = Field(default=None, description="Field names to include in the response.")
-    categories: Optional[List[str]] = Field(default=None, description="Categories to filter by.")
+    run_id: Optional[str] = Field(default=None, description="The run ID associated with the memory.")
+    filters: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Entity and metadata filters. Must include at least one entity ID "
+        "(`user_id`, `agent_id`, `app_id`, or `run_id`). Supports `AND`, `OR`, `NOT`, and "
+        "comparison operators (`in`, `gte`, `lte`, `gt`, `lt`, `contains`, `icontains`, `ne`).",
+    )
+    top_k: Optional[int] = Field(default=None, description="Number of results to return.")
+    threshold: Optional[float] = Field(
+        default=None, description="Minimum semantic relevance score. Pass `0.0` to disable filtering."
+    )
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata associated with the memory.")
+    rerank: Optional[bool] = Field(default=None, description="Apply the managed reranker for better ordering (adds latency).")
+    fields: Optional[List[str]] = Field(
+        default=None, description="A list of field names to include in the response. If not provided, all fields will be returned."
+    )
+    categories: Optional[List[str]] = Field(default=None, description="A list of categories to filter the memories by.")
+    output_format: Optional[str] = Field(
+        default=None,
+        description="Response format. `v1.1` (default) returns `{\"results\": [...]}`. "
+        "`v1.0` returns a flat array `[{...}]` for backwards compatibility.",
+    )
 
 
 def _build_page_url(request: Request, *, page: int, page_size: int) -> str:
@@ -182,6 +231,75 @@ def _build_page_url(request: Request, *, page: int, page_size: int) -> str:
     params["page"] = str(page)
     params["page_size"] = str(page_size)
     return f"{request.url.path}?{urlencode(params)}"
+
+
+def _build_list_filters(
+    body: "MemoryGetInputV2",
+    entity_params: Dict[str, str],
+) -> Dict[str, Any]:
+    """Build SDK filter dict for get_all from a MemoryGetInputV2 body.
+
+    Starts from body.filters so non-entity conditions (e.g. created_at) are
+    preserved, then merges date / categories convenience fields for flat format.
+    setdefault avoids overriding conditions already present in body.filters.
+    """
+    sdk_filters: Dict[str, Any] = dict(body.filters) if body.filters else dict(entity_params)
+    if "AND" not in sdk_filters and "OR" not in sdk_filters:
+        date_filter: Dict[str, str] = {}
+        if body.start_date:
+            date_filter["gte"] = body.start_date
+        if body.end_date:
+            date_filter["lte"] = body.end_date
+        if date_filter:
+            sdk_filters.setdefault("created_at", date_filter)
+        if body.categories:
+            sdk_filters.setdefault("categories", {"contains": body.categories})
+    return sdk_filters
+
+
+def _paginate_response(
+    request: Request,
+    items: List[Any],
+    page: int,
+    page_size: int,
+) -> Dict[str, Any]:
+    """Wrap a list of items in the SDK-compatible pagination envelope."""
+    total = len(items)
+    start = (page - 1) * page_size
+    return {
+        "count": total,
+        "next": _build_page_url(request, page=page + 1, page_size=page_size) if start + page_size < total else None,
+        "previous": _build_page_url(request, page=page - 1, page_size=page_size) if page > 1 else None,
+        "results": items[start: start + page_size],
+    }
+
+
+def _warn_unsupported_fields(fields: Optional[List[str]], endpoint: str) -> None:
+    """Log a warning when 'fields' projection is requested but not supported by the OSS SDK."""
+    if fields:
+        logging.warning(
+            "%s: 'fields' projection is not supported by the OSS SDK "
+            "and will be ignored. Requested fields: %s",
+            endpoint,
+            fields,
+        )
+
+
+def _build_search_kwargs(
+    filters: Dict[str, Any],
+    top_k: Optional[int],
+    threshold: Optional[float],
+    rerank: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Build keyword arguments for Memory.search() from common request fields."""
+    kwargs: Dict[str, Any] = {"filters": filters}
+    if top_k is not None:
+        kwargs["top_k"] = top_k
+    if threshold is not None:
+        kwargs["threshold"] = threshold
+    if rerank is not None:
+        kwargs["rerank"] = rerank
+    return kwargs
 
 
 @router.get("/v1/ping/", summary="Ping / validate API key")
@@ -219,6 +337,10 @@ def v1_add_memories(body: MemoryAddInput, _auth=Depends(verify_auth)):
     params = drop_none({**entity_params, "metadata": body.metadata})
     if body.infer is not None:
         params["infer"] = body.infer
+    if body.categories:
+        meta = params.get("metadata") or {}
+        meta.setdefault("categories", body.categories)
+        params["metadata"] = meta
     result = get_memory_instance().add(messages=body.messages, **params)
     return {"results": normalize_results(result)}
 
@@ -284,12 +406,9 @@ def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="At least one entity ID is required.")
-    search_kwargs: Dict[str, Any] = {"filters": entity_params}
-    if body.top_k is not None:
-        search_kwargs["top_k"] = body.top_k
-    if body.threshold is not None:
-        search_kwargs["threshold"] = body.threshold
-    result = get_memory_instance().search(query=body.query, **search_kwargs)
+    result = get_memory_instance().search(
+        query=body.query, **_build_search_kwargs(entity_params, body.top_k, body.threshold)
+    )
     return {"results": normalize_results(result)}
 
 
@@ -400,51 +519,27 @@ def v2_list_memories(
         filters=body.filters,
         detail="filters must include at least one entity ID (user_id, agent_id, or run_id).",
     )
-    sdk_filters = dict(entity_params)
-    date_filter: Dict[str, str] = {}
-    if body.start_date:
-        date_filter["gte"] = body.start_date
-    if body.end_date:
-        date_filter["lte"] = body.end_date
-    if date_filter:
-        sdk_filters["created_at"] = date_filter
-    if body.categories:
-        sdk_filters["categories"] = {"contains": body.categories}
-    raw = get_memory_instance().get_all(filters=sdk_filters)
-    items = normalize_results(raw)
-
-    total = len(items)
-    start = (page - 1) * page_size
-    page_items = items[start : start + page_size]
-    next_url = _build_page_url(request, page=page + 1, page_size=page_size) if start + page_size < total else None
-    previous_url = _build_page_url(request, page=page - 1, page_size=page_size) if page > 1 else None
-
-    return {
-        "count": total,
-        "next": next_url,
-        "previous": previous_url,
-        "results": page_items,
-    }
+    raw = get_memory_instance().get_all(filters=_build_list_filters(body, entity_params))
+    return _paginate_response(request, normalize_results(raw), page, page_size)
 
 
 @router.post("/v2/memories/search/", summary="Search memories (v2)")
 @upstream_guard
 def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
+    _warn_unsupported_fields(body.fields, "v2_search_memories")
     entity_params = collect_entity_params(
         filters=body.filters,
         user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="At least one entity ID is required.")
-    search_kwargs: Dict[str, Any] = {"filters": entity_params}
-    if body.top_k is not None:
-        search_kwargs["top_k"] = body.top_k
-    if body.threshold is not None:
-        search_kwargs["threshold"] = body.threshold
-    if body.rerank is not None:
-        search_kwargs["rerank"] = body.rerank
-    result = get_memory_instance().search(query=body.query, **search_kwargs)
+    # Pass full filters to the SDK so non-entity conditions are not discarded;
+    # fall back to entity_params when no filters provided.
+    effective_filters: Dict[str, Any] = body.filters if body.filters else entity_params
+    result = get_memory_instance().search(
+        query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
+    )
     return {"results": normalize_results(result)}
 
 
@@ -486,13 +581,15 @@ def v3_add_memory(body: MemoryAddInputV3, _auth=Depends(verify_auth)):
         "custom_instructions": body.custom_instructions,
         "structured_data_schema": body.structured_data_schema,
         "timestamp": body.timestamp,
+        "source": body.source,
+        "deduced_memories": body.deduced_memories,
     })
     if extra_meta:
         meta = params.get("metadata") or {}
         meta.update(extra_meta)
         params["metadata"] = meta
     result = get_memory_instance().add(messages=body.messages, **params)
-    return JSONResponse(content=result)
+    return result
 
 
 @router.post("/v3/memories/", summary="Get all memories (v3)")
@@ -508,51 +605,34 @@ def v3_get_all_memories(
         filters=body.filters,
         detail="filters must include at least one entity ID (user_id, agent_id, or run_id).",
     )
-    sdk_filters = dict(entity_params)
-    date_filter: Dict[str, str] = {}
-    if body.start_date:
-        date_filter["gte"] = body.start_date
-    if body.end_date:
-        date_filter["lte"] = body.end_date
-    if date_filter:
-        sdk_filters["created_at"] = date_filter
-    if body.categories:
-        sdk_filters["categories"] = {"contains": body.categories}
-    raw = get_memory_instance().get_all(filters=sdk_filters)
-    items = normalize_results(raw)
-
-    total = len(items)
-    start = (page - 1) * page_size
-    page_items = items[start : start + page_size]
-    next_url = _build_page_url(request, page=page + 1, page_size=page_size) if start + page_size < total else None
-    previous_url = _build_page_url(request, page=page - 1, page_size=page_size) if page > 1 else None
-
-    return {
-        "count": total,
-        "next": next_url,
-        "previous": previous_url,
-        "results": page_items,
-    }
+    raw = get_memory_instance().get_all(filters=_build_list_filters(body, entity_params))
+    return _paginate_response(request, normalize_results(raw), page, page_size)
 
 
 @router.post("/v3/memories/search/", summary="Search memories (v3)")
 @upstream_guard
 def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
     reject_app_id(body.app_id)
+    _warn_unsupported_fields(body.fields, "v3_search_memories")
     entity_params = collect_entity_params(
         filters=body.filters,
         user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="At least one entity ID is required.")
-    search_kwargs: Dict[str, Any] = {"filters": entity_params}
-    if body.top_k is not None:
-        search_kwargs["top_k"] = body.top_k
-    if body.threshold is not None:
-        search_kwargs["threshold"] = body.threshold
-    if body.rerank is not None:
-        search_kwargs["rerank"] = body.rerank
-    result = get_memory_instance().search(query=body.query, **search_kwargs)
+    # Pass full filters to the SDK so non-entity conditions are not discarded;
+    # fall back to entity_params when no filters provided.
+    effective_filters: Dict[str, Any] = dict(body.filters) if body.filters else dict(entity_params)
+    # Merge convenience categories field for flat (non-AND/OR) dicts.
+    if "AND" not in effective_filters and "OR" not in effective_filters:
+        if body.categories and "categories" not in effective_filters:
+            effective_filters["categories"] = {"contains": body.categories}
+    result = get_memory_instance().search(
+        query=body.query, **_build_search_kwargs(effective_filters, body.top_k, body.threshold, body.rerank)
+    )
+    if body.output_format == "v1.0":
+        # Legacy flat-array format requested by the caller.
+        return result if isinstance(result, list) else result.get("results", [])
     if isinstance(result, list):
         return {"results": result}
     return result

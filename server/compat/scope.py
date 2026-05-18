@@ -51,7 +51,19 @@ def collect_entity_params(
                     raise HTTPException(status_code=501, detail=f"'{key}' is not supported by the self-hosted server.")
     merged: dict[str, Any] = {}
     if filters:
+        # Fast path: flat format {user_id: "...", ...}
         merged.update({k: v for k, v in filters.items() if k in ENTITY_PARAMS and v is not None})
+        # Slow path: AND/OR nested format {AND: [{user_id: "..."}, ...]}
+        # Used by openclaw's _buildFilters when multiple conditions are present.
+        if not merged:
+            for op in ("AND", "OR"):
+                conditions = filters.get(op)
+                if isinstance(conditions, list):
+                    for cond in conditions:
+                        if isinstance(cond, dict):
+                            merged.update({k: v for k, v in cond.items() if k in ENTITY_PARAMS and v is not None})
+                    if merged:
+                        break
     for key, val in (("user_id", user_id), ("agent_id", agent_id), ("run_id", run_id)):
         if val is not None:
             merged[key] = val
@@ -99,7 +111,26 @@ def build_search_filters(
         filters=filters, detail=detail, fallback_user_id=fallback_user_id,
     )
     merged: dict[str, Any] = dict(filters) if filters else {}
-    merged.update(scope)
+    if "AND" not in merged and "OR" not in merged:
+        # Flat format: safe to merge entity scope at top level.
+        merged.update(scope)
+        return merged
+    # AND/OR format: merging scope at top level would produce a malformed mixed-format dict
+    # (e.g. {"AND": [...], "user_id": "bob"}).  Only inject entity params that came from
+    # explicit kwargs (plus fallback) — those already inside AND/OR conditions are already
+    # present in 'merged' and do not need re-injection.
+    kwargs_scope = collect_entity_params(user_id=user_id, agent_id=agent_id, run_id=run_id, reject_unsupported=False)
+    if not kwargs_scope and fallback_user_id:
+        kwargs_scope = {"user_id": fallback_user_id}
+    if not kwargs_scope:
+        # All scope came from within the AND/OR conditions; nothing extra to inject.
+        return merged
+    if "AND" in merged:
+        # Append extra entity conditions into the AND list (new list to avoid mutating caller's filters).
+        merged["AND"] = [*merged["AND"], *({k: v} for k, v in kwargs_scope.items())]
+    else:
+        # OR format: wrap in an outer AND to restrict to the entity without modifying OR logic.
+        merged = {"AND": [merged, kwargs_scope]}
     return merged
 
 

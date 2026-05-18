@@ -1,6 +1,5 @@
 import importlib
-import sys
-from pathlib import Path
+import uuid
 from unittest.mock import MagicMock
 
 import pytest
@@ -11,11 +10,7 @@ pytest.importorskip("mcp", reason="mcp not installed")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-SERVER_DIR = Path(__file__).resolve().parents[1] / "server"
-if str(SERVER_DIR) not in sys.path:
-    sys.path.insert(0, str(SERVER_DIR))
-
-mcp_server = importlib.import_module("mcp_server")
+import server.mcp_server as mcp_server
 
 MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
 
@@ -61,6 +56,7 @@ def mcp_testbed(monkeypatch):
     app.dependency_overrides[module.verify_auth] = lambda: None
 
     client = TestClient(app)
+    _initialize_client(client)
     return module, client, mock_memory
 
 
@@ -72,7 +68,6 @@ def _initialize_client(client: TestClient, headers: dict | None = None) -> None:
 
 def test_tools_list_exposes_expected_toolset(mcp_testbed):
     _, client, _ = mcp_testbed
-    _initialize_client(client)
 
     response = client.post("/mcp", json=_jsonrpc("tools/list", req_id=2), headers=MCP_HEADERS)
 
@@ -100,7 +95,6 @@ def test_tools_list_exposes_expected_toolset(mcp_testbed):
 
 def test_add_memory_tool_uses_explicit_user_id(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    _initialize_client(client)
 
     response = client.post(
         "/mcp",
@@ -119,7 +113,6 @@ def test_add_memory_tool_uses_explicit_user_id(mcp_testbed):
 
 def test_add_memory_requires_scope(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    _initialize_client(client)
 
     response = client.post(
         "/mcp",
@@ -137,8 +130,6 @@ def test_add_memory_requires_scope(mcp_testbed):
 @pytest.fixture
 def mcp_testbed_authed(monkeypatch):
     """Like mcp_testbed but verify_auth returns a real User-like object with a known id."""
-    import uuid
-
     module = importlib.reload(mcp_server)
 
     mock_memory = MagicMock()
@@ -154,12 +145,12 @@ def mcp_testbed_authed(monkeypatch):
     app.dependency_overrides[module.verify_auth] = lambda: mock_user
 
     client = TestClient(app)
+    _initialize_client(client)
     return module, client, mock_memory, str(auth_user_id)
 
 
 def test_add_memory_defaults_user_id_to_auth_user(mcp_testbed_authed):
     _, client, mock_memory, auth_uid = mcp_testbed_authed
-    _initialize_client(client)
 
     client.post(
         "/mcp",
@@ -175,7 +166,6 @@ def test_add_memory_defaults_user_id_to_auth_user(mcp_testbed_authed):
 
 def test_add_memory_infer_false_passes_flag(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    _initialize_client(client)
 
     client.post(
         "/mcp",
@@ -192,7 +182,6 @@ def test_add_memory_infer_false_passes_flag(mcp_testbed):
 
 def test_add_memory_with_metadata(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    _initialize_client(client)
 
     client.post(
         "/mcp",
@@ -209,7 +198,6 @@ def test_add_memory_with_metadata(mcp_testbed):
 
 def test_search_memories_with_explicit_user_id(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    _initialize_client(client)
 
     client.post(
         "/mcp",
@@ -222,7 +210,6 @@ def test_search_memories_with_explicit_user_id(mcp_testbed):
 
 def test_get_memories_with_explicit_user_id(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    _initialize_client(client)
 
     client.post(
         "/mcp",
@@ -236,7 +223,6 @@ def test_get_memories_with_explicit_user_id(mcp_testbed):
 def test_get_memory_non_dict_returns_empty(mcp_testbed):
     """When SDK get() returns a non-dict, MCP should log a warning and return {}."""
     module, client, mock_memory = mcp_testbed
-    _initialize_client(client)
     mock_memory.get.return_value = ["not", "a", "dict"]
 
     response = client.post(
@@ -257,7 +243,6 @@ def test_get_memory_non_dict_returns_empty(mcp_testbed):
 def test_update_memory_non_dict_returns_fallback(mcp_testbed):
     """When SDK update() returns a non-dict, MCP should log a warning and return fallback."""
     module, client, mock_memory = mcp_testbed
-    _initialize_client(client)
     mock_memory.update.return_value = "ok"
 
     response = client.post(
@@ -300,17 +285,14 @@ def test_normalize_list_result_shapes():
 
 def test_iter_payloads_skips_none_rows():
     """iter_payloads should skip None entries in the rows list."""
-    import importlib as _ilib
     from unittest.mock import patch
-
-    module = _ilib.reload(mcp_server)
+    from compat.entities import iter_payloads
 
     row = MagicMock(payload={"data": 1})
     mock_memory = MagicMock()
     mock_memory.vector_store.list.return_value = [row, None, MagicMock(payload={"data": 2})]
 
-    with patch.object(module, "get_memory_instance", return_value=mock_memory):
-        from compat.entities import iter_payloads
+    with patch("compat.entities.get_memory_instance", return_value=mock_memory):
         payloads = iter_payloads()
 
     assert payloads == [{"data": 1}, {"data": 2}]
@@ -319,7 +301,6 @@ def test_iter_payloads_skips_none_rows():
 
 def test_update_memory_with_metadata(mcp_testbed):
     _, client, mock_memory = mcp_testbed
-    _initialize_client(client)
 
     client.post(
         "/mcp",
@@ -342,7 +323,6 @@ def test_client_name_context_is_taken_from_header(mcp_testbed):
     headers = {**MCP_HEADERS, "x-mcp-client-name": "cursor-test"}
 
     try:
-        _initialize_client(client, headers=headers)
         response = client.post(
             "/mcp",
             json=_jsonrpc("tools/call", {"name": "__test_client_name", "arguments": {}}, req_id=2),
