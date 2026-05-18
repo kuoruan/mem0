@@ -1,0 +1,512 @@
+"""Unit tests for the server compat utilities.
+
+Covers:
+  - compat.scope   : collect_entity_params, require_entity_scope,
+                     build_search_filters, reject_app_id, get_entity_field
+  - compat.responses: drop_none, normalize_results, normalize_results_dict
+  - routers.compat helpers: _build_list_filters, _paginate_response,
+                             _warn_unsupported_fields, _build_search_kwargs
+"""
+
+import logging
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+
+pytest.importorskip("fastapi", reason="fastapi not installed")
+
+from fastapi import HTTPException
+from server.compat.responses import drop_none, normalize_results, normalize_results_dict
+from server.compat.scope import (
+    build_search_filters,
+    collect_entity_params,
+    get_entity_field,
+    reject_app_id,
+    require_entity_scope,
+)
+from server.routers.compat import (
+    MemoryGetInputV2,
+    _build_list_filters,
+    _build_search_kwargs,
+    _paginate_response,
+    _warn_unsupported_fields,
+)
+
+
+# ---------------------------------------------------------------------------
+# compat.scope
+# ---------------------------------------------------------------------------
+
+
+class TestRejectAppId:
+    def test_none_passes(self):
+        reject_app_id(None)  # should not raise
+
+    def test_non_none_raises_501(self):
+        with pytest.raises(HTTPException) as exc:
+            reject_app_id("my-app")
+        assert exc.value.status_code == 501
+
+
+class TestGetEntityField:
+    def test_user(self):
+        assert get_entity_field("user") == "user_id"
+
+    def test_agent(self):
+        assert get_entity_field("agent") == "agent_id"
+
+    def test_run(self):
+        assert get_entity_field("run") == "run_id"
+
+    def test_app_raises_501(self):
+        with pytest.raises(HTTPException) as exc:
+            get_entity_field("app")
+        assert exc.value.status_code == 501
+
+    def test_unknown_raises_400(self):
+        with pytest.raises(HTTPException) as exc:
+            get_entity_field("robot")
+        assert exc.value.status_code == 400
+
+
+class TestCollectEntityParams:
+    def test_explicit_user_id(self):
+        assert collect_entity_params(user_id="u1") == {"user_id": "u1"}
+
+    def test_multiple_kwargs(self):
+        result = collect_entity_params(user_id="u1", agent_id="a1")
+        assert result == {"user_id": "u1", "agent_id": "a1"}
+
+    def test_flat_filters(self):
+        result = collect_entity_params(filters={"user_id": "u1", "agent_id": "a1"})
+        assert result == {"user_id": "u1", "agent_id": "a1"}
+
+    def test_non_entity_keys_in_filters_ignored(self):
+        result = collect_entity_params(filters={"user_id": "u1", "created_at": {"gte": "2024"}})
+        assert result == {"user_id": "u1"}
+
+    def test_kwargs_override_filters(self):
+        result = collect_entity_params(
+            user_id="explicit",
+            filters={"user_id": "from_filter"},
+        )
+        assert result == {"user_id": "explicit"}
+
+    def test_and_nested(self):
+        result = collect_entity_params(
+            filters={"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]}
+        )
+        assert result == {"user_id": "u1"}
+
+    def test_or_nested(self):
+        result = collect_entity_params(
+            filters={"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]}
+        )
+        assert result == {"user_id": "u1", "agent_id": "a1"}
+
+    def test_none_values_skipped(self):
+        assert collect_entity_params(user_id=None, agent_id=None) == {}
+
+    def test_empty_returns_empty(self):
+        assert collect_entity_params() == {}
+
+    def test_app_id_kwarg_raises_501(self):
+        with pytest.raises(HTTPException) as exc:
+            collect_entity_params(app_id="x")
+        assert exc.value.status_code == 501
+
+    def test_app_id_in_flat_filters_raises_501(self):
+        with pytest.raises(HTTPException):
+            collect_entity_params(filters={"app_id": "x"})
+
+    def test_reject_unsupported_false_skips_app_check(self):
+        # reject_unsupported=False should not raise for app_id
+        result = collect_entity_params(app_id="x", reject_unsupported=False)
+        assert "app_id" not in result  # app_id is not an entity param anyway
+
+    def test_app_id_in_nested_and_filters_raises_501(self):
+        with pytest.raises(HTTPException) as exc:
+            collect_entity_params(filters={"AND": [{"app_id": "x"}, {"user_id": "u1"}]})
+        assert exc.value.status_code == 501
+
+    def test_app_id_in_nested_or_filters_raises_501(self):
+        with pytest.raises(HTTPException) as exc:
+            collect_entity_params(filters={"OR": [{"app_id": "x"}, {"user_id": "u1"}]})
+        assert exc.value.status_code == 501
+
+
+class TestRequireEntityScope:
+    def test_raises_when_empty(self):
+        with pytest.raises(HTTPException) as exc:
+            require_entity_scope()
+        assert exc.value.status_code == 400
+
+    def test_custom_detail(self):
+        with pytest.raises(HTTPException) as exc:
+            require_entity_scope(detail="need id")
+        assert exc.value.detail == "need id"
+
+    def test_returns_scope(self):
+        result = require_entity_scope(user_id="u1")
+        assert result == {"user_id": "u1"}
+
+    def test_fallback_user_id_when_empty(self):
+        result = require_entity_scope(fallback_user_id="fallback")
+        assert result == {"user_id": "fallback"}
+
+    def test_explicit_takes_priority_over_fallback(self):
+        result = require_entity_scope(user_id="explicit", fallback_user_id="fallback")
+        assert result == {"user_id": "explicit"}
+
+    def test_scope_from_filters(self):
+        result = require_entity_scope(filters={"user_id": "u1"})
+        assert result == {"user_id": "u1"}
+
+
+class TestBuildSearchFilters:
+    def test_no_filters_entity_kwarg(self):
+        result = build_search_filters(user_id="u1")
+        assert result == {"user_id": "u1"}
+
+    def test_flat_filters_merged(self):
+        result = build_search_filters(
+            user_id="u1",
+            filters={"created_at": {"gte": "2024-01-01"}},
+        )
+        assert result == {"user_id": "u1", "created_at": {"gte": "2024-01-01"}}
+
+    def test_flat_filters_entity_already_present(self):
+        """Entity kwarg should overwrite same key already in flat filters."""
+        result = build_search_filters(
+            user_id="explicit",
+            filters={"user_id": "from_filter", "created_at": {"gte": "2024"}},
+        )
+        assert result["user_id"] == "explicit"
+        assert "created_at" in result
+
+    def test_and_entity_in_conditions_not_re_injected(self):
+        """user_id already inside AND conditions: nothing extra to inject."""
+        filters = {"AND": [{"user_id": "u1"}, {"created_at": {"gte": "2024"}}]}
+        result = build_search_filters(filters=filters)
+        # result should equal the original AND structure, not add user_id at top level
+        assert result == filters
+        assert "user_id" not in result
+
+    def test_and_extra_entity_kwarg_injected_into_and(self):
+        """user_id from explicit kwarg not present in AND conditions: inject into AND list."""
+        filters = {"AND": [{"created_at": {"gte": "2024"}}]}
+        result = build_search_filters(user_id="u1", filters=filters)
+        assert "AND" in result
+        assert "user_id" not in result  # not at top level
+        and_items = result["AND"]
+        assert any(item.get("user_id") == "u1" for item in and_items)
+
+    def test_and_does_not_mutate_input(self):
+        """Injecting into AND must not modify the original filters object."""
+        original = {"AND": [{"created_at": {"gte": "2024"}}]}
+        build_search_filters(user_id="u1", filters=original)
+        assert original == {"AND": [{"created_at": {"gte": "2024"}}]}
+
+    def test_or_extra_entity_kwarg_wraps_in_outer_and(self):
+        """user_id from explicit kwarg with OR filters: wrap in AND."""
+        filters = {"OR": [{"user_id": "u1"}, {"agent_id": "a1"}]}
+        result = build_search_filters(user_id="explicit", filters=filters)
+        assert "AND" in result
+        assert "OR" not in result  # OR is nested inside AND now
+        outer_and = result["AND"]
+        assert any("OR" in item for item in outer_and)
+        assert any(item.get("user_id") == "explicit" for item in outer_and)
+
+    def test_raises_without_any_scope(self):
+        with pytest.raises(HTTPException) as exc:
+            build_search_filters()
+        assert exc.value.status_code == 400
+
+    def test_fallback_user_id(self):
+        result = build_search_filters(fallback_user_id="fallback")
+        assert result == {"user_id": "fallback"}
+
+
+# ---------------------------------------------------------------------------
+# compat.responses
+# ---------------------------------------------------------------------------
+
+
+class TestDropNone:
+    def test_removes_none_values(self):
+        assert drop_none({"a": 1, "b": None, "c": "x"}) == {"a": 1, "c": "x"}
+
+    def test_all_none(self):
+        assert drop_none({"a": None, "b": None}) == {}
+
+    def test_no_none(self):
+        assert drop_none({"a": 1, "b": 2}) == {"a": 1, "b": 2}
+
+    def test_empty_input(self):
+        assert drop_none({}) == {}
+
+    def test_does_not_remove_falsy_non_none(self):
+        assert drop_none({"a": 0, "b": False, "c": ""}) == {"a": 0, "b": False, "c": ""}
+
+
+class TestNormalizeResults:
+    def test_bare_list(self):
+        raw = [{"id": "1"}, {"id": "2"}]
+        assert normalize_results(raw) == raw
+
+    def test_dict_with_results_key(self):
+        raw = {"results": [{"id": "1"}], "count": 1}
+        assert normalize_results(raw) == [{"id": "1"}]
+
+    def test_empty_list(self):
+        assert normalize_results([]) == []
+
+    def test_empty_results_dict(self):
+        assert normalize_results({"results": []}) == []
+
+    def test_unknown_type_returns_empty(self):
+        assert normalize_results("not a list") == []
+        assert normalize_results(None) == []
+        assert normalize_results(42) == []
+
+    def test_dict_without_results_key_returns_empty(self):
+        assert normalize_results({"count": 5}) == []
+
+
+class TestNormalizeResultsDict:
+    def test_bare_list(self):
+        raw = [{"id": "1"}]
+        assert normalize_results_dict(raw) == {"results": [{"id": "1"}]}
+
+    def test_dict_with_results_key_passthrough(self):
+        raw = {"results": [{"id": "1"}], "count": 1}
+        assert normalize_results_dict(raw) == raw
+
+    def test_empty_list(self):
+        assert normalize_results_dict([]) == {"results": []}
+
+    def test_unknown_type_returns_empty_results(self):
+        assert normalize_results_dict(None) == {"results": []}
+        assert normalize_results_dict("x") == {"results": []}
+
+
+# ---------------------------------------------------------------------------
+# _build_list_filters
+# ---------------------------------------------------------------------------
+
+
+class TestBuildListFilters:
+    def _body(self, **kwargs: Any) -> MemoryGetInputV2:
+        return MemoryGetInputV2(**kwargs)
+
+    def test_no_filters_falls_back_to_entity_params(self):
+        body = self._body()
+        result = _build_list_filters(body, {"user_id": "u1"})
+        assert result == {"user_id": "u1"}
+
+    def test_flat_filters_preserved(self):
+        body = self._body(filters={"user_id": "u1", "created_at": {"gte": "2024-01-01"}})
+        result = _build_list_filters(body, {"user_id": "u1"})
+        assert result == {"user_id": "u1", "created_at": {"gte": "2024-01-01"}}
+
+    def test_start_date_added(self):
+        body = self._body(filters={"user_id": "u1"}, start_date="2024-01-01")
+        result = _build_list_filters(body, {"user_id": "u1"})
+        assert result["created_at"] == {"gte": "2024-01-01"}
+
+    def test_end_date_added(self):
+        body = self._body(filters={"user_id": "u1"}, end_date="2024-12-31")
+        result = _build_list_filters(body, {"user_id": "u1"})
+        assert result["created_at"] == {"lte": "2024-12-31"}
+
+    def test_date_range_combined(self):
+        body = self._body(
+            filters={"user_id": "u1"},
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+        )
+        result = _build_list_filters(body, {"user_id": "u1"})
+        assert result["created_at"] == {"gte": "2024-01-01", "lte": "2024-12-31"}
+
+    def test_categories_added(self):
+        body = self._body(filters={"user_id": "u1"}, categories=["finance"])
+        result = _build_list_filters(body, {"user_id": "u1"})
+        assert result["categories"] == {"contains": ["finance"]}
+
+    def test_existing_created_at_not_overridden(self):
+        """setdefault: body.filters already has created_at, date params should not override."""
+        body = self._body(
+            filters={"user_id": "u1", "created_at": {"gte": "2023-01-01"}},
+            start_date="2024-01-01",
+        )
+        result = _build_list_filters(body, {"user_id": "u1"})
+        assert result["created_at"] == {"gte": "2023-01-01"}
+
+    def test_existing_categories_not_overridden(self):
+        body = self._body(
+            filters={"user_id": "u1", "categories": {"in": ["personal"]}},
+            categories=["finance"],
+        )
+        result = _build_list_filters(body, {"user_id": "u1"})
+        assert result["categories"] == {"in": ["personal"]}
+
+    def test_and_format_skips_date_categories_merge(self):
+        """AND/OR format: convenience fields must not be injected at top level."""
+        body = self._body(
+            filters={"AND": [{"user_id": "u1"}]},
+            start_date="2024-01-01",
+            categories=["finance"],
+        )
+        result = _build_list_filters(body, {"user_id": "u1"})
+        assert "created_at" not in result
+        assert "categories" not in result
+        assert "AND" in result
+
+    def test_does_not_mutate_body_filters(self):
+        original = {"user_id": "u1"}
+        body = self._body(filters=original, start_date="2024-01-01")
+        _build_list_filters(body, {"user_id": "u1"})
+        assert original == {"user_id": "u1"}
+
+
+# ---------------------------------------------------------------------------
+# _paginate_response
+# ---------------------------------------------------------------------------
+
+
+class TestPaginateResponse:
+    def _request(self, path: str = "/v2/memories/", params: dict | None = None) -> MagicMock:
+        req = MagicMock()
+        req.url.path = path
+        req.query_params = params or {}
+        return req
+
+    def test_first_page_no_previous(self):
+        req = self._request()
+        items = list(range(25))
+        result = _paginate_response(req, items, page=1, page_size=10)
+        assert result["count"] == 25
+        assert result["previous"] is None
+        assert result["next"] is not None
+        assert result["results"] == list(range(10))
+
+    def test_last_page_no_next(self):
+        req = self._request()
+        items = list(range(25))
+        result = _paginate_response(req, items, page=3, page_size=10)
+        assert result["count"] == 25
+        assert result["next"] is None
+        assert result["previous"] is not None
+        assert result["results"] == [20, 21, 22, 23, 24]
+
+    def test_single_page(self):
+        req = self._request()
+        items = [1, 2, 3]
+        result = _paginate_response(req, items, page=1, page_size=10)
+        assert result["count"] == 3
+        assert result["next"] is None
+        assert result["previous"] is None
+        assert result["results"] == [1, 2, 3]
+
+    def test_empty_items(self):
+        req = self._request()
+        result = _paginate_response(req, [], page=1, page_size=10)
+        assert result["count"] == 0
+        assert result["results"] == []
+        assert result["next"] is None
+        assert result["previous"] is None
+
+    def test_middle_page_has_both(self):
+        req = self._request()
+        items = list(range(30))
+        result = _paginate_response(req, items, page=2, page_size=10)
+        assert result["count"] == 30
+        assert result["next"] is not None
+        assert result["previous"] is not None
+        assert result["results"] == list(range(10, 20))
+
+    def test_next_url_contains_page_param(self):
+        req = self._request()
+        items = list(range(25))
+        result = _paginate_response(req, items, page=1, page_size=10)
+        assert "page=2" in result["next"]
+        assert "page_size=10" in result["next"]
+
+    def test_previous_url_contains_page_param(self):
+        req = self._request()
+        items = list(range(25))
+        result = _paginate_response(req, items, page=3, page_size=10)
+        assert "page=2" in result["previous"]
+
+
+# ---------------------------------------------------------------------------
+# _warn_unsupported_fields
+# ---------------------------------------------------------------------------
+
+
+class TestWarnUnsupportedFields:
+    def test_no_fields_no_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            _warn_unsupported_fields(None, "v3_search_memories")
+        assert "fields" not in caplog.text
+
+    def test_empty_list_no_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            _warn_unsupported_fields([], "v3_search_memories")
+        assert "fields" not in caplog.text
+
+    def test_fields_emits_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            _warn_unsupported_fields(["id", "memory"], "v2_search_memories")
+        assert "v2_search_memories" in caplog.text
+        assert "fields" in caplog.text.lower()
+
+    def test_warning_includes_field_names(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            _warn_unsupported_fields(["score"], "v3_search_memories")
+        assert "score" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# _build_search_kwargs
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSearchKwargs:
+    def test_filters_always_present(self):
+        result = _build_search_kwargs({"user_id": "u1"}, None, None)
+        assert result == {"filters": {"user_id": "u1"}}
+
+    def test_top_k_included(self):
+        result = _build_search_kwargs({"user_id": "u1"}, 5, None)
+        assert result["top_k"] == 5
+
+    def test_threshold_included(self):
+        result = _build_search_kwargs({"user_id": "u1"}, None, 0.7)
+        assert result["threshold"] == 0.7
+
+    def test_rerank_included(self):
+        result = _build_search_kwargs({"user_id": "u1"}, None, None, rerank=True)
+        assert result["rerank"] is True
+
+    def test_none_kwargs_omitted(self):
+        result = _build_search_kwargs({"user_id": "u1"}, None, None, None)
+        assert "top_k" not in result
+        assert "threshold" not in result
+        assert "rerank" not in result
+
+    def test_all_params(self):
+        result = _build_search_kwargs({"user_id": "u1"}, 10, 0.5, rerank=False)
+        assert result == {"filters": {"user_id": "u1"}, "top_k": 10, "threshold": 0.5, "rerank": False}
+
+    def test_zero_threshold_included(self):
+        """threshold=0.0 is falsy but must be included (disables score filtering)."""
+        result = _build_search_kwargs({"user_id": "u1"}, None, 0.0)
+        assert "threshold" in result
+        assert result["threshold"] == 0.0
+
+    def test_zero_top_k_included(self):
+        result = _build_search_kwargs({"user_id": "u1"}, 0, None)
+        assert "top_k" in result
+        assert result["top_k"] == 0
