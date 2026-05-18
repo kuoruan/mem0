@@ -39,7 +39,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from auth import verify_auth
 from compat.decorators import upstream_guard
@@ -49,17 +49,20 @@ from compat.scope import (
     VALID_ENTITY_TYPES,
     collect_entity_params,
     get_entity_field,
+    reject_app_id,
     require_entity_scope,
 )
 from server_state import get_memory_instance, list_all_memories
 
 router = APIRouter(tags=["Client API"])
 
+
 class MemoryAddInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     messages: List[Dict[str, Any]] = Field(description="Array of message objects with 'role' and 'content' keys.")
     agent_id: Optional[str] = Field(default=None, description="Agent identifier to scope the memory.")
     user_id: Optional[str] = Field(default=None, description="User identifier to scope the memory.")
-    app_id: Optional[str] = Field(default=None, description="App identifier to scope the memory.")
+    app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
     run_id: Optional[str] = Field(default=None, description="Run identifier to scope the memory.")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata to attach to the memory.")
     infer: Optional[bool] = Field(default=None, description="When False, store messages verbatim without LLM fact extraction.")
@@ -67,10 +70,11 @@ class MemoryAddInput(BaseModel):
 
 
 class MemorySearchInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     query: str = Field(description="The search query string.")
     agent_id: Optional[str] = Field(default=None, description="Agent ID to filter memories by.")
     user_id: Optional[str] = Field(default=None, description="User ID to filter memories by.")
-    app_id: Optional[str] = Field(default=None, description="App ID to filter memories by.")
+    app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
     run_id: Optional[str] = Field(default=None, description="Run ID to filter memories by.")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Metadata filters for the search.")
     top_k: Optional[int] = Field(default=None, description="Maximum number of results to return.")
@@ -79,34 +83,41 @@ class MemorySearchInput(BaseModel):
 
 
 class MemoryUpdateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     text: Optional[str] = Field(default=None, description="New text content for the memory.")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Updated metadata for the memory.")
     timestamp: Optional[Any] = Field(default=None, description="Unix timestamp for the memory.")
 
 
 class MemoryBatchUpdateItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     memory_id: str = Field(description="ID of the memory to update.")
     text: Optional[str] = Field(default=None, description="New text content.")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Updated metadata.")
 
 
 class MemoryBatchUpdateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     memories: List[MemoryBatchUpdateItem] = Field(description="List of memories to update.")
 
 
 class MemoryBatchDeleteItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     memory_id: str = Field(description="ID of the memory to delete.")
 
 
 class MemoryBatchDeleteLegacyInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     memories: List[MemoryBatchDeleteItem] = Field(description="List of memories to delete (legacy format).")
 
 
 class MemoryBatchDeleteInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     memory_ids: List[str] = Field(description="List of memory IDs to delete.")
 
 
 class MemoryGetInputV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     filters: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Filters with entity IDs and operators (AND, OR, gte, lte, contains, etc.).",
@@ -117,6 +128,7 @@ class MemoryGetInputV2(BaseModel):
 
 
 class MemorySearchInputV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     query: str = Field(description="The search query string.")
     filters: Optional[Dict[str, Any]] = Field(default=None, description="Structured filters with entity IDs and operators.")
     top_k: Optional[int] = Field(default=None, description="Maximum number of results to return.")
@@ -124,16 +136,17 @@ class MemorySearchInputV2(BaseModel):
     rerank: Optional[bool] = Field(default=None, description="Whether to rerank results.")
     user_id: Optional[str] = Field(default=None, description="User ID to filter by (also accepted inside filters).")
     agent_id: Optional[str] = Field(default=None, description="Agent ID to filter by (also accepted inside filters).")
-    app_id: Optional[str] = Field(default=None, description="App ID to filter by (also accepted inside filters).")
+    app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
     run_id: Optional[str] = Field(default=None, description="Run ID to filter by (also accepted inside filters).")
     fields: Optional[List[str]] = Field(default=None, description="Field names to include in the response.")
 
 
 class MemoryAddInputV3(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     messages: List[Dict[str, Any]] = Field(description="Array of message objects with 'role' and 'content' keys.")
     agent_id: Optional[str] = Field(default=None, description="Agent identifier to scope the memory.")
     user_id: Optional[str] = Field(default=None, description="User identifier to scope the memory.")
-    app_id: Optional[str] = Field(default=None, description="App identifier to scope the memory.")
+    app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
     run_id: Optional[str] = Field(default=None, description="Run identifier to scope the memory.")
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata to attach to the memory.")
     filters: Optional[Dict[str, Any]] = Field(default=None, description="Filters containing entity IDs (e.g. {'user_id': '...'}).")
@@ -151,10 +164,11 @@ class MemoryAddInputV3(BaseModel):
 
 
 class MemorySearchInputV3(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     query: str = Field(description="The search query string.")
     agent_id: Optional[str] = Field(default=None, description="Agent ID to filter by.")
     user_id: Optional[str] = Field(default=None, description="User ID to filter by.")
-    app_id: Optional[str] = Field(default=None, description="App ID to filter by.")
+    app_id: Optional[str] = Field(default=None, description="Not supported by the self-hosted server (returns 501).")
     run_id: Optional[str] = Field(default=None, description="Run ID to filter by.")
     filters: Optional[Dict[str, Any]] = Field(default=None, description="Structured filters with entity IDs and operators.")
     top_k: Optional[int] = Field(default=None, description="Maximum number of results to return.")
@@ -184,11 +198,13 @@ def ping(_auth=Depends(verify_auth)):
 def v1_list_memories(
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
-    app_id: Optional[str] = None,
     run_id: Optional[str] = None,
+    app_id: Optional[str] = None,
     _auth=Depends(verify_auth),
 ):
-    filters = drop_none({"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id})
+    if app_id is not None:
+        raise HTTPException(status_code=501, detail="'app_id' is not supported by the self-hosted server.")
+    filters = drop_none({"user_id": user_id, "agent_id": agent_id, "run_id": run_id})
     raw = get_memory_instance().get_all(filters=filters) if filters else list_all_memories()
     return normalize_results(raw)
 
@@ -196,8 +212,9 @@ def v1_list_memories(
 @router.post("/v1/memories/", summary="Add memories (v1)")
 @upstream_guard
 def v1_add_memories(body: MemoryAddInput, _auth=Depends(verify_auth)):
+    reject_app_id(body.app_id)
     entity_params = collect_entity_params(
-        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id, app_id=body.app_id,
+        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="At least one entity ID is required.")
@@ -229,11 +246,19 @@ def v1_update_memory(memory_id: str, body: MemoryUpdateInput, _auth=Depends(veri
     metadata = body.metadata
     if body.timestamp is not None:
         metadata = {**(metadata or {}), "timestamp": body.timestamp}
-    return get_memory_instance().update(
-        memory_id=memory_id,
-        data=body.text,
-        metadata=metadata,
-    )
+    if body.text is not None:
+        return get_memory_instance().update(
+            memory_id=memory_id,
+            data=body.text,
+            metadata=metadata,
+        )
+    # text is None — metadata-only update: read, merge metadata, write back
+    mem = get_memory_instance()
+    existing = mem.get(memory_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' not found.")
+    existing_text = existing.get("memory", "") if isinstance(existing, dict) else ""
+    return mem.update(memory_id=memory_id, data=existing_text, metadata=metadata)
 
 
 @router.delete("/v1/memories/{memory_id}/", summary="Delete a memory (v1)")
@@ -259,9 +284,10 @@ def v1_get_entity_memories(entity_type: str, entity_id: str, _auth=Depends(verif
 @router.post("/v1/memories/search/", summary="Search memories (v1)")
 @upstream_guard
 def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
+    reject_app_id(body.app_id)
     entity_params = collect_entity_params(
         filters=body.filters,
-        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id, app_id=body.app_id,
+        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="At least one entity ID is required.")
@@ -279,33 +305,36 @@ def v1_search_memories(body: MemorySearchInput, _auth=Depends(verify_auth)):
 def v1_delete_all_memories(
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
-    app_id: Optional[str] = None,
     run_id: Optional[str] = None,
+    app_id: Optional[str] = None,
     filters: Optional[str] = None,
     _auth=Depends(verify_auth),
 ):
+    if app_id is not None:
+        raise HTTPException(status_code=501, detail="'app_id' is not supported by the self-hosted server.")
     # ``filters`` is a legacy query-string JSON blob (not the structured dict
     # used in v2/v3 body endpoints). Only parse it when no explicit entity
     # params are given, to avoid silently overriding explicit args.
-    if filters and not any([user_id, agent_id, app_id, run_id]):
+    if filters and not any([user_id, agent_id, run_id]):
         try:
             filters_dict = json.loads(filters)
             user_id = user_id or filters_dict.get("user_id")
             agent_id = agent_id or filters_dict.get("agent_id")
-            app_id = app_id or filters_dict.get("app_id")
             run_id = run_id or filters_dict.get("run_id")
-        except (json.JSONDecodeError, AttributeError):
+            if filters_dict.get("app_id"):
+                raise HTTPException(status_code=501, detail="'app_id' is not supported by the self-hosted server.")
+        except json.JSONDecodeError:
+            pass
+        except AttributeError:
             pass
 
-    params = drop_none({"user_id": user_id, "agent_id": agent_id, "app_id": app_id, "run_id": run_id})
+    params = drop_none({"user_id": user_id, "agent_id": agent_id, "run_id": run_id})
     if not params:
         raise HTTPException(
             status_code=400,
-            detail="At least one identifier (user_id, agent_id, app_id, run_id) is required.",
+            detail="At least one identifier (user_id, agent_id, run_id) is required.",
         )
-    # SDK delete_all only accepts user_id, agent_id, run_id — filter app_id
-    sdk_params = {k: v for k, v in params.items() if k in ("user_id", "agent_id", "run_id")}
-    get_memory_instance().delete_all(**sdk_params)
+    get_memory_instance().delete_all(**params)
     return {"message": "All memories deleted successfully."}
 
 
@@ -316,7 +345,13 @@ def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
         raise HTTPException(status_code=400, detail="Maximum of 1000 memories can be updated in a single request")
     mem = get_memory_instance()
     for item in body.memories:
-        mem.update(memory_id=item.memory_id, data=item.text, metadata=item.metadata)
+        if item.text is not None:
+            mem.update(memory_id=item.memory_id, data=item.text, metadata=item.metadata)
+        elif item.metadata is not None:
+            existing = mem.get(item.memory_id)
+            if existing is not None:
+                existing_text = existing.get("memory", "") if isinstance(existing, dict) else ""
+                mem.update(memory_id=item.memory_id, data=existing_text, metadata=item.metadata)
     return {"message": f"Successfully updated {len(body.memories)} memories"}
 
 
@@ -370,7 +405,7 @@ def v2_list_memories(
 ):
     entity_params = require_entity_scope(
         filters=body.filters,
-        detail="filters must include at least one entity ID (user_id, agent_id, app_id, or run_id).",
+        detail="filters must include at least one entity ID (user_id, agent_id, or run_id).",
     )
     sdk_filters = dict(entity_params)
     date_filter: Dict[str, str] = {}
@@ -402,9 +437,10 @@ def v2_list_memories(
 @router.post("/v2/memories/search/", summary="Search memories (v2)")
 @upstream_guard
 def v2_search_memories(body: MemorySearchInputV2, _auth=Depends(verify_auth)):
+    reject_app_id(body.app_id)
     entity_params = collect_entity_params(
         filters=body.filters,
-        user_id=body.user_id, agent_id=body.agent_id, app_id=body.app_id, run_id=body.run_id,
+        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="At least one entity ID is required.")
@@ -439,9 +475,10 @@ def v2_delete_entity(entity_type: str, entity_id: str, _auth=Depends(verify_auth
 @router.post("/v3/memories/add/", summary="Add memory (v3)")
 @upstream_guard
 def v3_add_memory(body: MemoryAddInputV3, _auth=Depends(verify_auth)):
+    reject_app_id(body.app_id)
     entity_params = collect_entity_params(
         filters=body.filters,
-        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id, app_id=body.app_id,
+        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="At least one entity ID is required.")
@@ -476,7 +513,7 @@ def v3_get_all_memories(
 ):
     entity_params = require_entity_scope(
         filters=body.filters,
-        detail="filters must include at least one entity ID (user_id, agent_id, app_id, or run_id).",
+        detail="filters must include at least one entity ID (user_id, agent_id, or run_id).",
     )
     sdk_filters = dict(entity_params)
     date_filter: Dict[str, str] = {}
@@ -508,9 +545,10 @@ def v3_get_all_memories(
 @router.post("/v3/memories/search/", summary="Search memories (v3)")
 @upstream_guard
 def v3_search_memories(body: MemorySearchInputV3, _auth=Depends(verify_auth)):
+    reject_app_id(body.app_id)
     entity_params = collect_entity_params(
         filters=body.filters,
-        user_id=body.user_id, agent_id=body.agent_id, app_id=body.app_id, run_id=body.run_id,
+        user_id=body.user_id, agent_id=body.agent_id, run_id=body.run_id,
     )
     if not entity_params:
         raise HTTPException(status_code=400, detail="At least one entity ID is required.")
