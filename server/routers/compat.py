@@ -321,8 +321,7 @@ def v1_list_memories(
     app_id: Optional[str] = None,
     _auth=Depends(verify_auth),
 ):
-    if app_id is not None:
-        raise HTTPException(status_code=501, detail="'app_id' is not supported by the self-hosted server.")
+    reject_app_id(app_id)
     filters = drop_none({"user_id": user_id, "agent_id": agent_id, "run_id": run_id})
     raw = get_memory_instance().get_all(filters=filters) if filters else list_all_memories()
     return normalize_results(raw)
@@ -429,19 +428,18 @@ def v1_delete_all_memories(
     filters: Optional[str] = None,
     _auth=Depends(verify_auth),
 ):
-    if app_id is not None:
-        raise HTTPException(status_code=501, detail="'app_id' is not supported by the self-hosted server.")
+    reject_app_id(app_id)
     # ``filters`` is a legacy query-string JSON blob (not the structured dict
     # used in v2/v3 body endpoints). Only parse it when no explicit entity
     # params are given, to avoid silently overriding explicit args.
     if filters and not any([user_id, agent_id, run_id]):
         try:
             filters_dict = json.loads(filters)
+
+            reject_app_id(filters_dict.get("app_id"))
             user_id = user_id or filters_dict.get("user_id")
             agent_id = agent_id or filters_dict.get("agent_id")
             run_id = run_id or filters_dict.get("run_id")
-            if filters_dict.get("app_id"):
-                raise HTTPException(status_code=501, detail="'app_id' is not supported by the self-hosted server.")
         except json.JSONDecodeError:
             pass
         except AttributeError:
@@ -460,8 +458,6 @@ def v1_delete_all_memories(
 @router.put("/v1/batch/", summary="Batch update memories (v1)")
 @upstream_guard
 def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
-    if len(body.memories) > 1000:
-        raise HTTPException(status_code=400, detail="Maximum of 1000 memories can be updated in a single request")
     # Validate items: each must have at least text or metadata.
     invalid: List[str] = [item.memory_id for item in body.memories if item.text is None and item.metadata is None]
     if invalid:
