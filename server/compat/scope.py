@@ -52,9 +52,23 @@ def _scan_filters(
         if isinstance(sub, list):
             for cond in sub:
                 if isinstance(cond, dict):
-                    result.update(_scan_filters(cond, reject_keys=reject_keys))
+                    sub_result = _scan_filters(cond, reject_keys=reject_keys)
+                    for k, v in sub_result.items():
+                        if k in result and result[k] != v:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Conflicting values for '{k}' in filter conditions.",
+                            )
+                    result.update(sub_result)
         elif isinstance(sub, dict):
-            result.update(_scan_filters(sub, reject_keys=reject_keys))
+            sub_result = _scan_filters(sub, reject_keys=reject_keys)
+            for k, v in sub_result.items():
+                if k in result and result[k] != v:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Conflicting values for '{k}' in filter conditions.",
+                    )
+            result.update(sub_result)
     return result
 
 

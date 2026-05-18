@@ -247,7 +247,7 @@ def _build_list_filters(
     setdefault avoids overriding conditions already present in body.filters.
     """
     sdk_filters: Dict[str, Any] = dict(body.filters) if body.filters else dict(entity_params)
-    if "AND" not in sdk_filters and "OR" not in sdk_filters:
+    if "AND" not in sdk_filters and "OR" not in sdk_filters and "NOT" not in sdk_filters:
         date_filter: Dict[str, str] = {}
         if body.start_date:
             date_filter["gte"] = body.start_date
@@ -468,6 +468,17 @@ def v1_delete_all_memories(
 def v1_batch_update(body: MemoryBatchUpdateInput, _auth=Depends(verify_auth)):
     if len(body.memories) > 1000:
         raise HTTPException(status_code=400, detail="Maximum of 1000 memories can be updated in a single request")
+    # Reject items where neither text nor metadata is provided.
+    invalid = [item.memory_id for item in body.memories if item.text is None and item.metadata is None]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Items missing both 'text' and 'metadata': {invalid}")
+    # Metadata-only updates each require a get() call (N+1). Cap them to avoid timeouts.
+    metadata_only_count = sum(1 for item in body.memories if item.text is None and item.metadata is not None)
+    if metadata_only_count > 100:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many metadata-only updates ({metadata_only_count}). Maximum is 100 per request.",
+        )
     mem = get_memory_instance()
     updated_count = 0
     for item in body.memories:
